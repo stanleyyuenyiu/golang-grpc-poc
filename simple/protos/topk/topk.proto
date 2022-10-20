@@ -1,0 +1,50 @@
+syntax = "proto3";
+
+import "google/protobuf/any.proto";
+
+option go_package = "protos/topk";
+
+package topk;
+
+service Topk {
+  rpc IncreaseCounter (IncreaseCounterReq) returns (IncreaseCounterRes) {}
+
+  rpc StreamIncreaseCounter(stream IncreaseCounterReq) returns (stream ListTopKRes) {}
+
+  rpc ListTopK (ListTopKReq) returns (ListTopKRes) {}
+
+  rpc StreamListTopK(ListTopKReq) returns (stream ListTopKRes) {}
+  
+}
+
+enum EErrorCode {
+  INVALID = 0;
+  UNEXPECTED = 1;
+}
+
+
+message IncreaseCounterReq {
+  string key = 1;
+}
+
+message IncreaseCounterRes {
+  bool isSuccess = 1;
+  string message = 2;
+}
+
+message ListTopKReq {
+  uint32 k = 1;
+}
+
+message ListTopKRes {
+  bool isSuccess = 1;
+  map<string, uint32> message = 2;
+}
+
+message ErrorStatus {
+  string message = 1;
+  repeated google.protobuf.Any details = 2;
+}
+
+
+//protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative ./protos/topk/topk.proto
