@@ -110,12 +110,14 @@ func steamIncrease(ctx context.Context, c pb.TopkClient) {
 	ch := make(chan struct{})
 	// start goroutines for concurrent stream read
 	go func() {
+		// executed when program end
+		defer close(ch)
+
 		for {
 			res, err := r.Recv()
 
 			if err == io.EOF {
 			  //close channel when read end
-			  close(ch)
 			  return
 			}
 
