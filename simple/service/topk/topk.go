@@ -23,12 +23,18 @@ func increaseCounter(s *TopkService, key string) {
 			Value: key,
 			Priority: 1,
 		}
-		log.Printf("[IncreaseCounter] Addess for %v: %p", key, s.mapping[key])
+		log.Printf("[IncreaseCounter] Addess for %v: %p %v", key, s.mapping[key], 1)
 		heap.Push(s.pq, s.mapping[key])
 	}else{
-		s.mapping[key].Priority += 1
-		log.Printf("[IncreaseCounter] Addess for %v: %p", key, s.mapping[key])
-		heap.Fix(s.pq, s.mapping[key].Index)
+		item := s.mapping[key]
+		item.Priority +=1
+
+		if item.Index < 0 {
+			heap.Push(s.pq, item)
+		} else {
+			heap.Fix(s.pq, item.Index)
+		}
+		log.Printf("[IncreaseCounter] Addess for %v: %p %v  index: %v", key, item, item.Priority, item.Index)
 	}
 	if s.pq.Len() > s.k {
 		item := heap.Pop(s.pq).(*pq.TopKItem)
@@ -36,28 +42,38 @@ func increaseCounter(s *TopkService, key string) {
 	}
 }
 
-func listTopK(s *TopkService) ( res map[string]uint32 ) {
-	var heapItems []*pq.TopKItem
+func listTopk(q *pq.PriorityQueue, k int)  (msg map[string]uint32) {
+	msg = make(map[string]uint32, 0)
+	var qClone pq.PriorityQueue
 
-	for s.pq.Len() > 0 {
-		item := heap.Pop(s.pq).(*pq.TopKItem)
-		log.Printf("[ListTopK] Pop Addess for %v: %p", item.Value, item)
+	c := *q
+	i := 0
+	for i < q.Len() {
+		//Item in PriorityQueue stored as address, hence we need to clone it, instead of reference it, as heap will modifiy the item property 
+		item := *c[i]
+		qClone = append(qClone , &pq.TopKItem{
+			Value: item.Value,
+			Priority: item.Priority,
+		})
+		i+=1
+	}
+	
+	//Re heapify the cloned q
+	heap.Init(&qClone)
 
-		res[item.Value] = uint32(item.Priority)
-		heapItems = append(heapItems, item)
+	log.Printf("[listTopk] len for org %v, new %v", q.Len(), qClone.Len())
+
+	for qClone.Len() > 0 && k > 0 {
+		item := heap.Pop(&qClone).(*pq.TopKItem)
+		msg[item.Value] = uint32(item.Priority)
+		k -= 1
 	}
 
-	log.Printf("[ListTopK] After pop all pq: %v", s.pq.Len())
-
-	for _, heapItem := range heapItems {
-		log.Printf("[ListTopK] Push Addess for %v: %p", heapItem.Value, heapItem)
-		heap.Push(s.pq, heapItem)
-	}
-
-	log.Printf("[ListTopK] Re import pq: %v", s.pq.Len())
-
-	return res
+	log.Printf("[listTopk] len for org %v, new %v", q.Len(), qClone.Len())
+	
+	return msg
 }
+
 
 func (s *TopkService) IncreaseCounter(ctx context.Context, in *pb.IncreaseCounterReq) (*pb.IncreaseCounterRes, error) {
 	key := in.GetKey()
@@ -70,32 +86,30 @@ func (s *TopkService) IncreaseCounter(ctx context.Context, in *pb.IncreaseCounte
 }
 
 func (s *TopkService) ListTopK(ctx context.Context, in *pb.ListTopKReq) (*pb.ListTopKRes, error) {
-	k := in.GetK()
+	k := int(in.GetK())
 	log.Printf("[ListTopK] Received Key: %v", k)
 
-	res := listTopK(s)
+	res :=  listTopk(s.pq, k)
 
 	return &pb.ListTopKRes{ IsSuccess:true, Message: res}, nil
 }
 
 func (s *TopkService) StreamListTopK(in *pb.ListTopKReq, stream pb.Topk_StreamListTopKServer ) error {
-	k := in.GetK()
-	log.Printf("[ListTopK] Received Key: %v", k)
-	for _, item := range *s.pq {
-		msg := pb.ListTopKRes {
-			IsSuccess:true, 
-			Message: map[string]uint32{item.Value:uint32(item.Priority)},
-		}
+	k := int(in.GetK())
 
-		if err := stream.Send(&msg); err != nil {
-			return err
-		}
+	log.Printf("[StreamListTopK] Received Key: %v", k)
+
+	msg :=  listTopk(s.pq, k)
+	if err := stream.Send(&pb.ListTopKRes {
+		IsSuccess:true, 
+		Message: msg,
+	}); err != nil {
+		return err
 	}
 	return nil
 }
 
 func (s *TopkService) StreamIncreaseCounter(stream pb.Topk_StreamIncreaseCounterServer ) error {
-
 	for {
 		in, err := stream.Recv()
 
@@ -109,32 +123,28 @@ func (s *TopkService) StreamIncreaseCounter(stream pb.Topk_StreamIncreaseCounter
 		key := in.GetKey()
 
 		log.Printf("[StreamIncreaseCounter] Received Key: %v", key)
-
 		increaseCounter(s, key)
+		log.Printf("[IncreaseCounter] Key counter: %d", s.mapping[key].Priority)
 		
-		for _, item := range *s.pq {
-
-			msg := pb.ListTopKRes {
-				IsSuccess:true, 
-				Message: map[string]uint32{item.Value:uint32(item.Priority)},
-			}
-	
-			if err := stream.Send(&msg); err != nil {
-				return err
-			}
+		msg :=  listTopk(s.pq, s.k)
+		if err := stream.Send(&pb.ListTopKRes {
+			IsSuccess:true, 
+			Message: msg,
+		}); err != nil {
+			return err
 		}
-		
 	}
 }
 
+
 func Register(s grpc.ServiceRegistrar) {
-	
 	service := TopkService{}
 	service.mapping = make(map[string]*pq.TopKItem)
 	service.k = 5
 
 	pq := make(pq.PriorityQueue, 0)
 
+	//PriorityQueue needed to modify pq property, hence we use address 
 	heap.Init(&pq)
 	service.pq = &pq
 

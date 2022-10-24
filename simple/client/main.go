@@ -54,6 +54,7 @@ func main() {
 }
 
 func increase(ctx context.Context, c pb.TopkClient) {
+	
 	if *key != "" {
 		r, err := c.IncreaseCounter(ctx, &pb.IncreaseCounterReq{Key: *key })
 		if err != nil {
@@ -130,7 +131,7 @@ func steamIncrease(ctx context.Context, c pb.TopkClient) {
 	
 	i := 0
 	var key string
-	for i < 5 {
+	for i < 50 {
 		key = "key" + strconv.Itoa(rand.Intn(50))
 
 		log.Printf("Send: %v" , key)
@@ -139,7 +140,7 @@ func steamIncrease(ctx context.Context, c pb.TopkClient) {
 			log.Fatalf("Failed to send steamIncrease: %v", err)
 		}
 		
-		time.Sleep(time.Duration(rand.Intn(5)) * time.Second)
+		//time.Sleep(time.Duration(rand.Intn(2)) * time.Second)
 
 		i+=1
 	}
