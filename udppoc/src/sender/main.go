@@ -24,7 +24,7 @@ func main() {
   time.Sleep(1 * time.Second)
   count := 0
 	for {
-    msg := udp.BuildMsg("127.0.0.1", fmt.Sprintf("MSGID-%v", count), "send", count)
+    msg := udp.BuildMsg("127.0.0.1", fmt.Sprintf("MSGID-%v", count), "counter", count)
     sendCh <- *msg
     time.Sleep(2 * time.Second)
     count += 1

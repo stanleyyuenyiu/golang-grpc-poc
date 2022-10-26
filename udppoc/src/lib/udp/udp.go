@@ -4,94 +4,94 @@ import (
 	"net"
 	"log"
    "time"
-   //"bytes"
-   "encoding/json"
-   "fmt"
    c "udppoc/lib/struct/data"
+   u "udppoc/lib/utils"
 )
-const com_id = "2323"
+const com_id = "listener_id"
+
+func BuildMsg(receiverIP string, msgID string, dataType string, dataValue any) (*c.CommData) {
+  return &c.CommData{
+    Identifier: com_id,
+    SenderIP: u.GetLocalIP(),
+    ReceiverIP: receiverIP,
+    MsgID: msgID,
+    DataType: dataType,
+    DataValue: dataValue,
+  }
+}
+
 func Listen(sendCh chan c.CommData, listenAddr string,  listenPort int) (<-chan c.ConnData, <-chan c.CommData) {
   commSend := make(chan c.CommData)
+  commReply := make(chan c.CommData)
+
   commReceive := make(chan c.CommData, 1)
   commSentStatus := make(chan c.ConnData)
   receivedMsg := make(chan c.CommData)
 
-  go listen(commReceive, fmt.Sprintf(":%v", listenPort), false)
-  go broadcast(commSend, "", fmt.Sprintf(":%v", listenPort), fmt.Sprintf(":%v", listenPort))
-  go messageFowarder(commReceive, receivedMsg, commSentStatus, commSend, sendCh)
+  go listen(commReceive, commReply, listenPort, false)
+  go messageFowarder(commReceive, commReply, receivedMsg,  commSentStatus, commSend, sendCh)
   
   return commSentStatus, receivedMsg
 }
 
 func Send(sendCh chan c.CommData, targetAddr string, targetPort int, listenPort int) (<-chan c.ConnData, <-chan c.CommData) {
   commSend := make(chan c.CommData)
+  commReply := make(chan c.CommData)
   commReceive := make(chan c.CommData, 1)
   commSentStatus := make(chan c.ConnData)
   receivedMsg := make(chan c.CommData)
 
-  go listen(commReceive, fmt.Sprintf(":%v", listenPort), true)
-  go broadcast(commSend, targetAddr, fmt.Sprintf(":%v", targetPort), fmt.Sprintf(":%v", listenPort))
-  go messageFowarder(commReceive, receivedMsg, commSentStatus, commSend, sendCh)
+  go broadcast(commSend, commReceive, targetAddr, targetPort)
+  go messageFowarder(commReceive, commReply, receivedMsg, commSentStatus, commSend, sendCh)
 
   return commSentStatus, receivedMsg
 }
 
-func broadcast(send chan c.CommData, targetAddr string, targetPort string, listenPort string) {
-  //local, err := net.ResolveUDPAddr("udp", listenPort)
-  remoteAddr, _ := net.ResolveUDPAddr("udp", targetAddr + targetPort)
-  conn, err := net.DialUDP("udp", nil, remoteAddr)
+func broadcast(commSend chan c.CommData, commReceive chan c.CommData, targetAddr string, targetPort int) {
+  local := &net.UDPAddr{IP: net.IPv4zero, Port: 0}
+  boardcastAddr := &net.UDPAddr{IP: net.ParseIP(targetAddr), Port: targetPort}
+  conn, err := net.ListenUDP("udp", local) 
   defer conn.Close()
 
   if err != nil {
     panic(err)
   }
   
-  log.Printf("server dial remote to %v", remoteAddr)
-
-  for {
-    msg := <- send
-    convMsg, err := json.Marshal(msg)
-    if err != nil {
-      log.Printf("Convert json error: %v", err.Error())
-    }
-    if msg.AddrPort.Port > 0 {
-      log.Printf("Sending back to %v", msg.AddrPort)
-      conn.WriteToUDP(convMsg, &msg.AddrPort)
-    } else {
-      conn.Write(convMsg)
-    }
-  }
+  log.Printf("Server boardcasting from %v to %v",local, boardcastAddr)
   
+  ch := make(chan struct{})
+
+  go writeFromCn(conn, boardcastAddr, commSend)
+
+  go read(conn, commReceive)
+
+  <-ch
 }
 
-func listen(commReceive chan c.CommData, port string, readOnly bool) {
-	listenAddr, _ := net.ResolveUDPAddr("udp", port)
+func listen(commReceive chan c.CommData, commReply chan c.CommData, port int, readOnly bool) {
+  listenAddr := &net.UDPAddr{IP: net.IPv4zero, Port: port}
 	conn, err := net.ListenUDP("udp", listenAddr)
+
 	defer conn.Close()
 
 	if err != nil {
 		panic(err)
 	}
 	
-	log.Printf("server listening to %v", listenAddr)	
+	log.Printf("Server listening to %v", listenAddr)	
 
-	var msg c.CommData
-	for {
-		buffer := make([]byte, 4096)
-		length, replyAddr, err := conn.ReadFromUDP(buffer)
-		if err != nil {
-			panic(err)
-		}
-    if err := json.Unmarshal(buffer[:length], &msg); err != nil {
-      panic(err)
-    }
-    msg.AddrPort = *replyAddr
-    commReceive <- msg
-	}
+  ch := make(chan struct{})
+
+  go readAndReply(conn, commReceive)
+
+  go reply(conn, commReply)
+
+  <-ch
 }
 
 func messageFowarder(
   commReceive <-chan c.CommData, 
+  commReply chan<- c.CommData, 
   receivedMsg chan<- c.CommData, 
   commSentStatus chan<- c.ConnData, 
   commSend chan<- c.CommData, 
@@ -99,48 +99,88 @@ func messageFowarder(
   for {
       select {
         case msg := <- commReceive:
+
           if msg.DataType == "Received"{
+            log.Printf("Receive confriming message")
             response := c.ConnData{
               SenderIP: msg.SenderIP,
               MsgID: msg.MsgID,
               SendTime: time.Now(),
               Status: "Received",
             }
-            receivedMsg <- msg
             commSentStatus <- response
           } else {
-           response := c.CommData{
+            log.Printf("Receive message and reply ack")
+            response := c.CommData{
               Identifier: com_id,
-              SenderIP: "127.0.0.1",
+              SenderIP: u.GetLocalIP(),
               ReceiverIP: msg.SenderIP,
               MsgID: msg.MsgID,
-              AddrPort: msg.AddrPort,
               DataType: "Received",
               DataValue: time.Now(),
+              ReplyTo: msg.ReplyTo,
             }
+            commReply <- response
             receivedMsg <- msg
-            commSend <- response
           }
+
         case msg := <- sendCh: 
-          commSend <- msg
+          log.Printf("Sending message")
           timeSent := c.ConnData{
-            SenderIP: "127.0.0.1",
+            SenderIP: u.GetLocalIP(),
             MsgID: msg.MsgID,
             SendTime: time.Now(),
             Status: "Sent",
           }
           commSentStatus <- timeSent
+          commSend <- msg
       }
   }
 }
 
-func BuildMsg(receiverIP string, msgID string, dataType string, dataValue any) (*c.CommData) {
-    return &c.CommData{
-      Identifier: com_id,
-      SenderIP: "hardcode_sender_ip",
-      ReceiverIP: receiverIP,
-      MsgID: msgID,
-      DataType: dataType,
-      DataValue: dataValue,
+func writeFromCn(conn *net.UDPConn, to *net.UDPAddr,  ch chan c.CommData) {
+  for {
+      msg := <- ch
+      conn.WriteToUDP(msg.Marshal(), to)
+  }
+}
+
+func reply(conn *net.UDPConn, ch chan c.CommData) {
+  for {
+      msg := <- ch
+      conn.WriteToUDP(msg.Marshal(), &msg.ReplyTo)
+  }
+}
+
+func read(conn *net.UDPConn, ch chan c.CommData) {
+  var msg c.CommData
+  for {
+    buffer := make([]byte, 4096)
+    length, _, err := conn.ReadFrom(buffer)
+    if err != nil {
+      log.Println(err)
+    }
+    msg.Unmarshal(buffer[:length])
+    ch <- msg
+  }
+}
+
+func readAndReply(conn *net.UDPConn, ch chan c.CommData) {
+    var msg c.CommData
+    for {
+      buffer := make([]byte, 4096)
+      length, replyTo, err := conn.ReadFromUDP(buffer)
+      if err != nil {
+        log.Println(err)
+      }
+      msg.Unmarshal(buffer[:length])
+      msg.ReplyTo = *replyTo
+      ch <- msg
     }
 }
+
+
+
+
+
+
